@@ -7,12 +7,7 @@ license = "Apache-2.0"
 documentation = "https://docs.rs/hf-hub"
 repository = "https://github.com/huggingface/hf-hub"
 readme = "README.md"
-keywords = [
-    "huggingface",
-    "hf",
-    "hub",
-    "machine-learning"
-]
+keywords = ["huggingface", "hf", "hub", "machine-learning"]
 description = """
 This crates aims ease the interaction with [huggingface](https://huggingface.co/) 
 It aims to be compatible with [huggingface_hub](https://github.com/huggingface/huggingface_hub/) python package, but only implements a smaller subset of functions.
@@ -21,11 +16,11 @@ It aims to be compatible with [huggingface_hub](https://github.com/huggingface/h
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "5.0.1"
 http = { version = "1.0.0", optional = true }
 rand = { version = "0.8.5", optional = true }
-reqwest = { version = "0.11.18", optional = true, features = ["json"] }
+reqwest = { version = "0.11.23", optional = true, features = ["json"] }
 serde = { version = "1.0.171", features = ["derive"], optional = true }
 serde_json = { version = "1.0.103", optional = true }
 indicatif = { version = "0.17.5", optional = true }
@@ -33,16 +28,75 @@ num_cpus = { version = "1.15.0", optional = true }
 tokio = { version = "1.29.1", optional = true, features = ["fs", "macros"] }
 futures = { version = "0.3.28", optional = true }
 thiserror = { version = "1.0.43", optional = true }
-ureq = { version = "2.8.0", optional = true, features = ["native-tls", "json", "socks-proxy"] }
+ureq = { version = "2.8.0", optional = true, features = [
+    "native-tls",
+    "json",
+    "socks-proxy",
+] }
 native-tls = { version = "0.2.11", optional = true }
 log = "0.4.19"
 
-[features]
-default = ["online"]
-online = ["dep:ureq", "dep:native-tls", "dep:rand", "dep:serde", "dep:serde_json", "dep:indicatif", "dep:thiserror", "dep:http"]
-tokio = ["dep:reqwest", "dep:tokio", "tokio/rt-multi-thread", "dep:futures", "dep:rand", "dep:serde", "dep:serde_json", "dep:indicatif", "dep:num_cpus", "dep:thiserror"]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+no-std-compat = { version = "0.4.1", default-features = false, features = [
+    "alloc",
+    "compat_hash",
+] }
+# TODO: check if requiring the std feature on http is bad
+# if it is, then another library or an adaption should be made
+# https://github.com/hyperium/http/pull/563
+http = { version = "1.0.0", default-features = false, features = ["std"] }
+reqwest = { version = "0.11.23", default-features = false, features = ["json"] }
+bytes = { version = "1.5.0", default-features = false, features = [] }
+serde = { version = "1.0.171", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.103", default-features = false, features = [] }
+# futures = { version = "0.3.28", optional = true }
+snafu = { version = "0.8.0", default-features = false, features = [
+    "unstable-core-error",
+] }
+log = { version = "0.4.19", default-features = false, features = [] }
+wasm-bindgen = { version = "0.2.91", default-features = false, features = [
+    "serde-serialize",
+] }
+wasm-bindgen-futures = { version = "0.4.24", default-features = false, features = [
+] }
+serde-wasm-bindgen = { version = "0.4", default-features = false, features = [
+] }
+indexed_db_futures = { version = "0.4.1", default-features = false, features = [
+    "indices",
+    "cursors",
+] }
+web-sys = { version = "0.3.0", default-features = false, features = [] }
+js-sys = { version = "0.3.0", default-features = false, features = [] }
 
-[dev-dependencies]
+[features]
+# default = ["online"]
+# default = ["tokio"]
+default = ["wasm"]
+online = [
+    "dep:ureq",
+    "dep:native-tls",
+    "dep:rand",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:indicatif",
+    "dep:thiserror",
+    "dep:http",
+]
+tokio = [
+    "dep:reqwest",
+    "dep:tokio",
+    "tokio/rt-multi-thread",
+    "dep:futures",
+    "dep:rand",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:indicatif",
+    "dep:num_cpus",
+    "dep:thiserror",
+]
+wasm = []
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 hex-literal = "0.4.1"
 sha2 = "0.10"
 tokio-test = "0.4.2"

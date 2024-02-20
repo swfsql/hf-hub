@@ -5,7 +5,15 @@ use serde::Deserialize;
 pub mod tokio;
 
 /// The synchronous version of the API
+#[cfg(feature = "online")]
 pub mod sync;
+
+/// The wasm version of the API
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
+#[cfg(feature = "wasm")]
+use std::{string::String, vec::Vec};
 
 /// Siblings are simplified file descriptions of remote files on the hub
 #[derive(Debug, Clone, Deserialize, PartialEq)]

@@ -30,7 +30,7 @@ cargo add hf-hub  # --features tokio
 
 Use the crate:
 
-```rust
+```rust,ignore
 use hf_hub::api::sync::Api;
 
 let api = Api::new().unwrap();

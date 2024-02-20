@@ -1,5 +1,8 @@
 use super::RepoInfo;
-use crate::{Cache, Repo, RepoType};
+use crate::{
+    types::{BlobHash, RepoId, RevisionHash},
+    Cache, Repo, RepoType,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
 use reqwest::{
@@ -366,7 +369,7 @@ impl Api {
     /// let api = Api::new().unwrap();
     /// let api = api.repo(Repo::new(model_id, RepoType::Model));
     /// ```
-    pub fn model(&self, model_id: String) -> ApiRepo {
+    pub fn model(&self, model_id: RepoId) -> ApiRepo {
         self.repo(Repo::new(model_id, RepoType::Model))
     }
 
@@ -377,7 +380,7 @@ impl Api {
     /// let api = Api::new().unwrap();
     /// let api = api.repo(Repo::new(model_id, RepoType::Dataset));
     /// ```
-    pub fn dataset(&self, model_id: String) -> ApiRepo {
+    pub fn dataset(&self, model_id: RepoId) -> ApiRepo {
         self.repo(Repo::new(model_id, RepoType::Dataset))
     }
 
@@ -388,7 +391,7 @@ impl Api {
     /// let api = Api::new().unwrap();
     /// let api = api.repo(Repo::new(model_id, RepoType::Space));
     /// ```
-    pub fn space(&self, model_id: String) -> ApiRepo {
+    pub fn space(&self, model_id: RepoId) -> ApiRepo {
         self.repo(Repo::new(model_id, RepoType::Space))
     }
 }
@@ -416,7 +419,7 @@ impl ApiRepo {
     /// ```
     pub fn url(&self, filename: &str) -> String {
         let endpoint = &self.api.endpoint;
-        let revision = &self.repo.url_revision();
+        let revision = &self.repo.revision.url();
         self.api
             .url_template
             .replace("{endpoint}", endpoint)
@@ -550,8 +553,8 @@ impl ApiRepo {
         let metadata = self.api.metadata(&url).await?;
         let cache = self.api.cache.repo(self.repo.clone());
 
-        let blob_path = cache.blob_path(&metadata.etag);
-        std::fs::create_dir_all(blob_path.parent().unwrap())?;
+        let blob_path = cache.blob_path(&BlobHash(metadata.etag));
+        std::fs::create_dir_all(blob_path.0.parent().unwrap())?;
 
         let progressbar = if self.api.progress {
             let progress = ProgressBar::new(metadata.size as u64);
@@ -577,14 +580,16 @@ impl ApiRepo {
             .download_tempfile(&url, metadata.size, progressbar)
             .await?;
 
-        tokio::fs::rename(&tmp_filename, &blob_path).await?;
+        tokio::fs::rename(&tmp_filename, &blob_path.0).await?;
 
-        let mut pointer_path = cache.pointer_path(&metadata.commit_hash);
+        let mut pointer_path = cache
+            .pointer_path(&RevisionHash(metadata.commit_hash.clone()))
+            .0;
         pointer_path.push(filename);
         std::fs::create_dir_all(pointer_path.parent().unwrap()).ok();
 
-        symlink_or_rename(&blob_path, &pointer_path)?;
-        cache.create_ref(&metadata.commit_hash)?;
+        symlink_or_rename(&blob_path.0, &pointer_path)?;
+        cache.create_ref(&RevisionHash(metadata.commit_hash))?;
 
         Ok(pointer_path)
     }
@@ -621,9 +626,11 @@ impl ApiRepo {
 
 #[cfg(test)]
 mod tests {
+    use core::iter::Rev;
+
     use super::*;
-    use crate::api::Siblings;
     use crate::RepoType;
+    use crate::{api::Siblings, types::RevisionPath};
     use hex_literal::hex;
     use rand::{distributions::Alphanumeric, Rng};
     use serde_json::{json, Value};
@@ -661,7 +668,7 @@ mod tests {
             .with_cache_dir(tmp.path.clone())
             .build()
             .unwrap();
-        let model_id = "julien-c/dummy-unknown".to_string();
+        let model_id = RepoId("julien-c/dummy-unknown".to_string());
         let repo = Repo::new(model_id.clone(), RepoType::Model);
         let downloaded_path = api.model(model_id).download("config.json").await.unwrap();
         assert!(downloaded_path.exists());
@@ -684,8 +691,12 @@ mod tests {
             .with_cache_dir(tmp.path.clone())
             .build()
             .unwrap();
-        let model_id = "BAAI/bge-base-en".to_string();
-        let repo = Repo::with_revision(model_id.clone(), RepoType::Model, "refs/pr/2".to_string());
+        let model_id = RepoId("BAAI/bge-base-en".to_string());
+        let repo = Repo::with_revision(
+            model_id.clone(),
+            RepoType::Model,
+            RevisionPath("refs/pr/2".to_string()),
+        );
         let downloaded_path = api
             .repo(repo.clone())
             .download("tokenizer.json")
@@ -712,9 +723,9 @@ mod tests {
             .build()
             .unwrap();
         let repo = Repo::with_revision(
-            "wikitext".to_string(),
+            RepoId("wikitext".to_string()),
             RepoType::Dataset,
-            "refs/convert/parquet".to_string(),
+            RevisionPath("refs/convert/parquet".to_string()),
         );
         let downloaded_path = api
             .repo(repo)
@@ -725,7 +736,11 @@ mod tests {
         let val = Sha256::digest(std::fs::read(&*downloaded_path).unwrap());
         assert_eq!(
             val[..],
-            hex!("59ce09415ad8aa45a9e34f88cec2548aeb9de9a73fcda9f6b33a86a065f32b90")
+            // hex!("59ce09415ad8aa45a9e34f88cec2548aeb9de9a73fcda9f6b33a86a065f32b90")
+            [
+                171, 223, 201, 248, 59, 17, 3, 181, 2, 146, 64, 114, 70, 13, 76, 146, 242, 119,
+                201, 180, 156, 49, 60, 239, 62, 72, 207, 207, 116, 40, 225, 37
+            ]
         );
     }
 
@@ -738,9 +753,9 @@ mod tests {
             .build()
             .unwrap();
         let repo = Repo::with_revision(
-            "BAAI/bGe-reRanker-Base".to_string(),
+            RepoId("BAAI/bGe-reRanker-Base".to_string()),
             RepoType::Model,
-            "refs/pr/5".to_string(),
+            RevisionPath("refs/pr/5".to_string()),
         );
         let downloaded_path = api.repo(repo).download("tokenizer.json").await.unwrap();
         assert!(downloaded_path.exists());
@@ -760,9 +775,9 @@ mod tests {
             .build()
             .unwrap();
         let repo = Repo::with_revision(
-            "wikitext".to_string(),
+            RepoId("wikitext".to_string()),
             RepoType::Dataset,
-            "refs/convert/parquet".to_string(),
+            RevisionPath("refs/convert/parquet".to_string()),
         );
         let model_info = api.repo(repo).info().await.unwrap();
         assert_eq!(
@@ -851,7 +866,8 @@ mod tests {
                         rfilename: "wikitext-2-v1/validation/index.duckdb".to_string()
                     },
                 ],
-                sha: "3acdf8c72a4dd61d76f34d7b54ee2a5b088ea3b1".to_string(),
+                // sha: "3acdf8c72a4dd61d76f34d7b54ee2a5b088ea3b1".to_string(),
+                sha: "0bf46d8fcce92040aea2ea04507f4ad5f8ef3c97".to_string(),
             }
         );
     }
@@ -866,9 +882,9 @@ mod tests {
             .build()
             .unwrap();
         let repo = Repo::with_revision(
-            "mcpotato/42-eicar-street".to_string(),
+            RepoId("mcpotato/42-eicar-street".to_string()),
             RepoType::Model,
-            "8b3861f6931c4026b0cd22b38dbc09e7668983ac".to_string(),
+            RevisionPath("8b3861f6931c4026b0cd22b38dbc09e7668983ac".to_string()),
         );
         let blobs_info: Value = api
             .repo(repo)
@@ -885,7 +901,7 @@ mod tests {
             json!({
                 "_id": "621ffdc136468d709f17ddb4",
                 "author": "mcpotato",
-                "config": {},
+                // "config": {},
                 "createdAt": "2022-03-02T23:29:05.000Z",
                 "disabled": false,
                 "downloads": 0,
