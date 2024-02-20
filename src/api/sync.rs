@@ -471,10 +471,10 @@ impl ApiRepo {
     /// let api = Api::new().unwrap();
     /// let local_filename = api.model("gpt2".to_string()).get("model.safetensors").unwrap();
     pub fn get(&self, filename: &FilePath) -> Result<PathBuf, ApiError> {
-        if let Some(path) = self.api.cache.repo(self.repo.clone()).get(filename) {
+        if let Some(path) = self.api.cache.repo(self.repo.clone()).get(&filename.0) {
             Ok(path)
         } else {
-            self.download(filename)
+            self.download(&filename.0)
         }
     }
 

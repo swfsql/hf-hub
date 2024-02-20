@@ -1,7 +1,6 @@
 #![deny(missing_docs)]
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
-use js_sys::Uint8Array;
 #[cfg(any(feature = "online", feature = "tokio"))]
 use rand::{distributions::Alphanumeric, Rng};
 #[cfg(any(feature = "online", feature = "tokio"))]
@@ -19,17 +18,18 @@ pub type PathType = std::path::PathBuf;
 pub type PathType = std::path::PathBuf;
 
 #[cfg(feature = "wasm")]
-use crate::alloc::{boxed::Box, string::ToString};
-#[cfg(feature = "wasm")]
-use std::{string::String, vec::Vec};
-#[cfg(feature = "wasm")]
 pub type PathType = Vec<String>;
 #[cfg(feature = "wasm")]
-use crate::types::{DbStore, FileBlobKey, FilePath};
+mod wasm_imports {
+    pub use crate::alloc::{boxed::Box, string::ToString};
+    pub use crate::types::{DbStore, FileBlobKey, FilePath};
+    pub use indexed_db_futures::{idb_transaction::IdbTransaction, IdbDatabase, IdbQuerySource};
+    pub use js_sys::Uint8Array;
+    pub use std::{string::String, vec::Vec};
+    pub use web_sys::{DomException, IdbKeyRange, IdbTransactionMode};
+}
 #[cfg(feature = "wasm")]
-use indexed_db_futures::{idb_transaction::IdbTransaction, IdbDatabase, IdbQuerySource};
-#[cfg(feature = "wasm")]
-use web_sys::{DomException, IdbKeyRange, IdbTransactionMode};
+use wasm_imports::*;
 
 /// The type of repo to interact with
 #[derive(Debug, Clone, Copy)]
