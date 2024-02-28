@@ -69,9 +69,10 @@ web-sys = { version = "0.3.0", default-features = false, features = [] }
 js-sys = { version = "0.3.0", default-features = false, features = [] }
 
 [features]
+default = []
 # default = ["online"]
 # default = ["tokio"]
-default = ["wasm"]
+# default = ["wasm"]
 online = [
     "dep:ureq",
     "dep:native-tls",

@@ -24,14 +24,21 @@ use std::vec::Vec;
 /// "[Endpoint]/[RepoId]/resolve/[RevisionPath]/[FilePath]".  
 ///
 /// Final url example generated from the template: "https://huggingface.co/EleutherAI/gpt-neox-20b/main/tokenizer.json".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct HfUrlTemplate(pub String);
+
+impl Default for HfUrlTemplate {
+    /// "{endpoint}/{repo_id}/resolve/{revision}/{filename}".
+    fn default() -> Self {
+        Self("{endpoint}/{repo_id}/resolve/{revision}/{filename}".into())
+    }
+}
 
 /// Url to a file.
 ///
 /// Eg. "https://huggingface.co/EleutherAI/gpt-neox-20b/main/tokenizer.json".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct FileUrl(pub String);
 
@@ -62,12 +69,19 @@ impl HfUrlTemplate {
 }
 
 /// Eg. "https://huggingface.co".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct Endpoint(pub String);
 
+impl Default for Endpoint {
+    /// "https://huggingface.co".
+    fn default() -> Self {
+        Self("https://huggingface.co".into())
+    }
+}
+
 /// Eg. "EleutherAI/gpt-neox-20b".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct RepoId(pub String);
 
@@ -91,12 +105,12 @@ impl RepoId {
 }
 
 /// Eg. "models--EleutherAI--gpt-neox-20b".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct FolderName(pub String);
 
 /// Eg. "main", "refs/pr/1".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct RevisionPath(pub String);
 
@@ -109,18 +123,24 @@ impl RevisionPath {
     }
 }
 
+impl Default for RevisionPath {
+    fn default() -> Self {
+        Self("main".into())
+    }
+}
+
 /// "{hash}"
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct RevisionHash(pub String);
 
 /// Eg. "tokenizer.json"
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct FilePath(pub String);
 
 /// "{hash}"
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct BlobHash(pub String);
 
@@ -133,14 +153,14 @@ pub struct BlobHash(pub String);
 ///
 /// Eg. 1024-2048: This chunk starts after 1kB (1024 offset) and contains 1kB of data (end minus the start).
 /// If there is a next chunk to this file, it would need to start at 2048.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct BlobChunkOffset(pub usize);
 
 /// Path to a hub, ie. "[Cache]/[FolderName]".
 ///
 /// Eg. `"huggingface/hub/models--EleutherAI--gpt-neox-20b"`.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct HubPath(pub PathType);
 
@@ -163,17 +183,17 @@ impl FromStr for HubPath {
 ///
 /// Eg. `"huggingface/hub/models--EleutherAI--gpt-neox-20b/refs/main"`.  
 /// Eg. `"huggingface/hub/models--EleutherAI--gpt-neox-20b/refs/refs/pr/1"`.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct HubRevPath(pub PathType);
 
 /// Path to a file blob hash, ie. "[Cache]/[FolderName]/blobs/[BlobHash]".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct BlobHashPath(pub PathType);
 
 /// Path to the files of a revision, ie. "[Cache]/[FolderName]/snapshots/[RevisionHash]".
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct FilesPath(pub PathType);
 
@@ -207,7 +227,7 @@ pub mod wasm {
     // ///
     // /// Eg. 1024-2048: This chunk starts after 1kB (1024 offset) and contains 1kB of data (end minus the start).
     // /// If there is a next chunk to this file, it would need to start at 2048.
-    // #[derive(Serialize, Deserialize, Clone, Debug)]
+    // #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
     // #[serde(transparent)]
     // pub struct BlobChunkOffset(pub usize);
 
@@ -228,7 +248,7 @@ pub mod wasm {
     }
 
     /// Key to [DbStore::Path], ie. "[Cache]/[FolderName]/refs".
-    #[derive(Serialize, Deserialize, Clone, Debug)]
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
     #[serde(transparent)]
     pub struct PathKey(pub PathType);
 
@@ -265,7 +285,7 @@ pub mod wasm {
     }
 
     /// Key to [DbStore::FileHash], ie. "[Cache]/[FolderName]/snapshots/[RevisionHash]/[FilePath]".
-    #[derive(Serialize, Deserialize, Clone, Debug)]
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
     #[serde(transparent)]
     pub struct FileHashKey(pub PathType);
 
@@ -325,7 +345,7 @@ pub mod wasm {
     /// ie. "[FileBlobKey]/[BlobChunkOffset]-[BlobChunkOffset]".
     ///
     /// Note that each stringfied [BlobChunkOffset] should be left-padded with zeros accordingly to it's maximum value.
-    #[derive(Serialize, Deserialize, Clone, Debug)]
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
     #[serde(transparent)]
     pub struct TmpFileBlobKey(pub PathType);
 
@@ -361,6 +381,10 @@ pub mod wasm {
             Ok(TmpFileBlobKey(tmp_file_blob_key))
         }
     }
+
+    /// A list of results of [TmpFileBlobKey].
+    /// [Ok] refers to cached chunks, [Err] refers to non-cached chunks.
+    pub type TmpFileBlobKeyList = Vec<Result<TmpFileBlobKey, TmpFileBlobKey>>;
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     pub enum DbStore {

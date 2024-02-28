@@ -32,7 +32,7 @@ mod wasm_imports {
 use wasm_imports::*;
 
 /// The type of repo to interact with
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RepoType {
     /// This is a model, usually it consists of weight files and some configuration
     /// files
@@ -196,6 +196,24 @@ impl Cache {
         // TODO: confirm that this doesn't copy the data
         let res = res.map(Uint8Array::from);
         Ok(res)
+    }
+
+    /// Delete if existing.
+    pub async fn store_delete(
+        &self,
+        db: &IdbDatabase,
+        store: DbStore,
+        key: &str,
+    ) -> Result<(), DomException> {
+        let mut store_name = self.path.clone();
+        store_name.push(store.name().into());
+        let store_name = store_name.join("/");
+        let tx: IdbTransaction =
+            db.transaction_on_one_with_mode(&store_name, IdbTransactionMode::Readwrite)?;
+        let store = tx.object_store(&store_name)?;
+        let () = store.delete_owned(key)?.await?;
+        tx.await.into_result()?;
+        Ok(())
     }
 
     /// Get if existing.
@@ -423,7 +441,7 @@ pub struct Repo {
 impl Repo {
     /// Repo with the default branch ("main").
     pub fn new(repo_id: RepoId, repo_type: RepoType) -> Self {
-        Self::with_revision(repo_id, repo_type, RevisionPath("main".to_string()))
+        Self::with_revision(repo_id, repo_type, RevisionPath::default())
     }
 
     /// fully qualified Repo

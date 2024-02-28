@@ -96,10 +96,17 @@ pub enum ApiError {
     // InvalidResponse(Response),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum UrlTemplate {
     Hf(HfUrlTemplate),
     Custom(String),
+}
+
+impl Default for UrlTemplate {
+    /// [HfUrlTemplate] as "{endpoint}/{repo_id}/resolve/{revision}/{filename}".
+    fn default() -> Self {
+        Self::Hf(HfUrlTemplate::default())
+    }
 }
 
 impl UrlTemplate {
@@ -153,7 +160,7 @@ impl ApiBuilder {
     /// ```
     pub fn new() -> Self {
         let cache = Cache::default();
-        Self::from_cache(cache)
+        Self::with(cache, Endpoint::default(), UrlTemplate::default())
     }
 
     /// From a given cache
@@ -163,16 +170,14 @@ impl ApiBuilder {
     /// let cache = Cache::new(path);
     /// let api = ApiBuilder::from_cache(cache).build().unwrap();
     /// ```
-    pub fn from_cache(cache: Cache) -> Self {
+    pub fn with(cache: Cache, endpoint: Endpoint, url_template: UrlTemplate) -> Self {
         // let token = cache.token();
 
         let progress = true;
 
         Self {
-            endpoint: Endpoint("https://huggingface.co".into()),
-            url_template: UrlTemplate::Hf(HfUrlTemplate(
-                "{endpoint}/{repo_id}/resolve/{revision}/{filename}".into(),
-            )),
+            endpoint,
+            url_template,
             cache,
             // token,
             max_files: 1,
@@ -308,11 +313,11 @@ impl ApiBuilder {
     }
 }
 
-#[derive(Debug)]
-struct Metadata {
-    commit_hash: RevisionHash,
-    etag: BlobHash,
-    size: usize,
+#[derive(Clone, Debug, PartialEq)]
+pub struct Metadata {
+    pub commit_hash: RevisionHash,
+    pub etag: BlobHash,
+    pub size: usize,
 }
 
 /// The actual Api used to interact with the hub.
@@ -409,58 +414,16 @@ impl Api {
 
     // TODO: check why there is a CORS error when there is a redirect to S3 on Firefox
     // (works on chromium)
-    async fn metadata(&self, url: &FileUrl) -> Result<Metadata, ApiError> {
+    pub async fn metadata(&self, url: &FileUrl) -> Result<Metadata, ApiError> {
         log::info!("downloading metadata: {}", url.0);
 
         let response = self
-            // .relative_redirect_client
             .client
             .get(&url.0)
             .header(RANGE, "bytes=0-0")
             .send()
             .await
             .unwrap();
-
-        // log::info!("metadata first response received");
-        let mut response = response.error_for_status().unwrap();
-
-        // loop {
-        //     if response.status().is_redirection() {
-        //         log::warn!("redirection");
-        //         if let Some(location) = response.headers().get(LOCATION) {
-        //             use http::Uri;
-
-        //             // Parse location
-        //             let uri = Uri::from_str(location.to_str().unwrap()).unwrap();
-
-        //             // Check if relative i.e. host is none
-        //             if uri.host().is_none() {
-        //                 // Merge relative path with url
-        //                 let mut parts = Uri::from_str(&url.0).unwrap().into_parts();
-        //                 parts.path_and_query = uri.into_parts().path_and_query;
-        //                 // Final uri
-        //                 let redirect_uri = Uri::from_parts(parts).unwrap();
-
-        //                 // Follow redirect
-        //                 log::info!(
-        //                     "downloading redirected metadata: {}",
-        //                     redirect_uri.to_string()
-        //                 );
-        //                 response = self
-        //                     // .relative_redirect_client
-        //                     .client
-        //                     .get(&redirect_uri.to_string())
-        //                     .header(RANGE, "bytes=0-0")
-        //                     .send()
-        //                     .await
-        //                     .unwrap();
-
-        //                 continue;
-        //             }
-        //         }
-        //     }
-        //     break;
-        // }
 
         let headers = response.headers();
         let header_commit = HeaderName::from_static("x-repo-commit");
@@ -490,19 +453,6 @@ impl Api {
             // (unsure, but if they can do atomic redirects, this could work)
             .unwrap_or_default();
 
-        // // The response was redirected so S3 most likely which will
-        // // know about the size of the file
-        // let response = if response.status().is_redirection() {
-        //     log::warn!("redirection for S3");
-        //     self.client
-        //         .get(headers.get(LOCATION).unwrap().to_str().unwrap().to_string())
-        //         .header(RANGE, "bytes=0-0")
-        //         .send()
-        //         .await
-        //         .unwrap()
-        // } else {
-        //     response
-        // };
         let headers = response.headers();
         let content_range = headers
             .get(CONTENT_RANGE)
@@ -518,7 +468,6 @@ impl Api {
             .unwrap()
             .parse()
             .unwrap();
-        log::info!("metadata loaded");
         Ok(Metadata {
             commit_hash: RevisionHash(commit_hash),
             etag: BlobHash(etag),
@@ -599,6 +548,16 @@ impl Api {
         res
     }
 
+    pub async fn delete_bytes(&self, blob_keys: &[TmpFileBlobKey]) {
+        for key in blob_keys {
+            let () = self
+                .cache
+                .store_delete(&self.db_client, DbStore::TmpFileBlob, &key.0.join("/"))
+                .await
+                .unwrap();
+        }
+    }
+
     // note: this use the range, but there are no performance gains
     // pub async fn load_bytes(&self, blob_keys: &[TmpFileBlobKey]) -> Vec<u8> {
     //     let first = blob_keys.first().unwrap();
@@ -656,152 +615,71 @@ impl ApiRepo {
     // TODO: rename function (get/download/etc)
     async fn download_tempfiles(
         &self,
-        blob_path: &FileBlobKey,
+        chunks: TmpFileBlobKeyList,
         url: &FileUrl,
-        size_bytes: usize,
     ) -> Result<Vec<TmpFileBlobKey>, ApiError> {
-        log::info!("Started checking/downloading file as chunks: {}", &url.0);
-
-        // key boundaries
-        let chunks_key_range = {
-            use web_sys::IdbKeyRange;
-
-            // 0-length starting at zero (there's no data before this)
-            // [FileBlobKey]/{...000}-{...000}
-            let before_first_chunk = blob_path.chunk(
-                BlobChunkOffset(0),
-                BlobChunkOffset(0),
-                BlobChunkOffset(size_bytes),
-            );
-            // 0-length starting at the end (there's no data after this)
-            // [FileBlobKey]/{size_bytes}-{size_bytes}
-            let after_last_chunk = blob_path.chunk(
-                BlobChunkOffset(size_bytes),
-                BlobChunkOffset(size_bytes),
-                BlobChunkOffset(size_bytes),
-            );
-            let before_first = JsValue::from_str(&before_first_chunk.0.join("/"));
-            let after_last = JsValue::from_str(&after_last_chunk.0.join("/"));
-            IdbKeyRange::bound(&before_first, &after_last).unwrap()
-        };
-        let cached_chunk_keys: Vec<TmpFileBlobKey> = self
-            .api
-            .cache
-            .store_key_range(&self.api.db_client, DbStore::TmpFileBlob, chunks_key_range)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|s| TmpFileBlobKey::from_str(&s).unwrap())
-            .collect();
-
-        let mut chunks = vec![];
-        let chunk_size = self.api.chunk_size;
-        let mut byte_start = 0;
-        let mut cached_chunk_i = 0;
-        // let mut cached_chunk_len = cached_chunk_keys.len();
-        'outer: while byte_start < size_bytes {
-            log::info!("byte_start: {byte_start}, size_bytes: {size_bytes}");
-            let mut byte_end = (byte_start + chunk_size).min(size_bytes);
-            byte_end = match cached_chunk_keys.get(cached_chunk_i) {
-                None => {
-                    log::info!("no more cached chunks");
-                    // no more cached chunks available
-                    byte_end
+        log::info!("Checking/downloading file as chunks: {}", &url.0);
+        let mut ok_chunks = vec![];
+        for chunk in chunks {
+            match chunk {
+                Ok(chunk) => {
+                    ok_chunks.push(chunk);
                 }
-                Some(next_cached_chunk) => {
-                    use core::cmp::Ordering;
-
-                    let (_prefix, cached_byte_start, cached_byte_end) = next_cached_chunk.split();
-                    log::info!("cached chunk info: cached_byte_start: {cached_byte_start:?}, cached_byte_end: {cached_byte_end:?}");
-                    match byte_start.cmp(&cached_byte_start.0) {
-                        Ordering::Less => {
-                            log::info!("cannot use the next cached chunk");
-                            // cannot use the next cached chunk
-                            // but still try to consider it for the chunk to be currently downloaded
-                            byte_end.min(cached_byte_start.0)
-                        }
-                        Ordering::Equal => {
-                            log::info!("using the next cached chunk");
-                            // can use the next cached chunk
-                            chunks.push(next_cached_chunk.clone());
-                            cached_chunk_i += 1;
-                            byte_start = cached_byte_end.0;
-                            continue 'outer;
-                        }
-                        Ordering::Greater => {
-                            // it's assumed that the byte offset to be downloaded
-                            // cannot be higher than the start of the next cached chunk being verified
-                            unreachable!()
-                        }
-                    }
+                Err(chunk) => {
+                    let () = self.download_tempfile(url, &chunk).await?;
+                    ok_chunks.push(chunk);
                 }
-            };
+            }
+        }
+        // log::info!(
+        //     "Checked/downloaded file as chunks: {} ({} chunks)",
+        //     &url.0,
+        //     ok_chunks.len()
+        // );
+        Ok(ok_chunks)
+    }
 
-            // at this point, a chunk must be downloaded (ie. it's not cached)
-            let byte_len = byte_end - byte_start;
-            let chunk_file = blob_path.chunk(
-                BlobChunkOffset(byte_start),
-                BlobChunkOffset(byte_start + byte_len),
-                BlobChunkOffset(size_bytes),
-            );
-            log::info!("Started downloading chunk: {}", &chunk_file.0.join("/"));
+    pub async fn download_tempfile(
+        &self,
+        url: &FileUrl,
+        chunk_file: &TmpFileBlobKey,
+    ) -> Result<(), ApiError> {
+        let (_prefix, byte_start, byte_end) = chunk_file.split();
+        let size_bytes = byte_end.0 - byte_start.0;
+        log::info!("Downloading chunk: {}", &chunk_file.0.join("/"));
 
-            // TODO: explain why this - 1 is required, also on documentations
-            let chunk_data: bytes::Bytes =
-                Self::download_chunk(&self.api.client, url, byte_start, byte_end - 1)
-                    .await
-                    .unwrap();
-            assert_eq!(byte_len, chunk_data.len());
-            assert!(byte_len <= u32::MAX as usize);
-            // let chunk_data = {
-            //     let chunk_data = chunk_data.to_vec();
-            //     chunk_data.into_boxed_slice()
-            // };
-            // let chunk_data = &*chunk_data;
-
-            // TODO: consider the unsafe fn Uint8Array::view() to avoid a copy
-            let chunk_data_arr = Uint8Array::new_with_length(byte_len as u32);
-            chunk_data_arr.copy_from(&chunk_data);
-            drop(chunk_data);
-
-            // TODO: allow for the returned data to be larger than the expected size, and react accordingly? (maybe not as this is assumed to never happen)
-            // TODO: discard extra data in case it's present?
-
-            // TODO: maximum of 4GB?
-            // assert!(len <= u32::MAX as usize);
-            // let mut chunk_array = js_sys::Uint8Array::new_with_length(len as u32);
-            // chunk_array.copy_from(chunk_data);
-
-            let () = self
-                .api
-                .cache
-                .store_set_bytes(
-                    &self.api.db_client,
-                    DbStore::TmpFileBlob,
-                    &chunk_file.0.join("/"),
-                    // TODO:
-                    // should this be sent as a &[u8],
-                    // or should it be a js_sys::Uint8Array
-                    // or whatnot?
-                    &chunk_data_arr,
-                )
+        // TODO: explain why this - 1 is required, also on documentations
+        let chunk_data: bytes::Bytes =
+            Self::download_chunk(&self.api.client, url, byte_start.0, byte_end.0 - 1)
                 .await
                 .unwrap();
-            log::info!(
-                "Saved chunk to storage: {} ({} bytes)",
-                &chunk_file.0.join("/"),
-                byte_len
-            );
-            chunks.push(chunk_file);
+        // TODO: allow for the returned data to be larger than the expected size, and react accordingly? (maybe not as this is assumed to never happen)
+        // TODO: discard extra data in case it's present?
+        assert_eq!(size_bytes, chunk_data.len());
+        assert!(size_bytes <= u32::MAX as usize);
 
-            byte_start += byte_len;
-        }
-        log::info!(
-            "Checked/downloaded file as chunks: {} ({} chunks)",
-            &url.0,
-            chunks.len()
-        );
-        Ok(chunks)
+        // TODO: consider the unsafe fn Uint8Array::view() to avoid a copy
+        let chunk_data_arr = Uint8Array::new_with_length(size_bytes as u32);
+        chunk_data_arr.copy_from(&chunk_data);
+        drop(chunk_data);
+
+        let () = self
+            .api
+            .cache
+            .store_set_bytes(
+                &self.api.db_client,
+                DbStore::TmpFileBlob,
+                &chunk_file.0.join("/"),
+                &chunk_data_arr,
+            )
+            .await
+            .unwrap();
+        // log::info!(
+        //     "Saved chunk to storage: {} ({} bytes)",
+        //     &chunk_file.0.join("/"),
+        //     size_bytes
+        // );
+        Ok(())
     }
 
     // TODO: rename function (get/download/etc)
@@ -836,7 +714,7 @@ impl ApiRepo {
     /// let local_filename = api.model("gpt2".to_string()).get("model.safetensors").await.unwrap();
     /// # })
     pub async fn get(&self, filename: &FilePath) -> Result<Vec<TmpFileBlobKey>, ApiError> {
-        log::info!("Started checking/downloading file: {}", &filename.0);
+        log::info!("Checking/downloading file: {}", &filename.0);
         if let Some(_path) = self
             .api
             .cache
@@ -861,6 +739,109 @@ impl ApiRepo {
         }
     }
 
+    // TODO: rename function (get/download/etc)
+    //
+    pub async fn check(
+        &self,
+        filename: &FilePath,
+        metadata: &Metadata,
+    ) -> Result<TmpFileBlobKeyList, ApiError> {
+        log::info!("Checking file: {}", &filename.0);
+        // let url = self.url(filename);
+        let cache = self.api.cache.repo(self.repo.clone());
+        let blob_path: FileBlobKey = cache.blob_path(&metadata.etag);
+        let size_bytes = metadata.size;
+
+        let chunks_key_range = {
+            use web_sys::IdbKeyRange;
+
+            // 0-length starting at zero (there's no data before this)
+            // [FileBlobKey]/{...000}-{...000}
+            let before_first_chunk = blob_path.chunk(
+                BlobChunkOffset(0),
+                BlobChunkOffset(0),
+                BlobChunkOffset(size_bytes),
+            );
+            // 0-length starting at the end (there's no data after this)
+            // [FileBlobKey]/{size_bytes}-{size_bytes}
+            let after_last_chunk = blob_path.chunk(
+                BlobChunkOffset(size_bytes),
+                BlobChunkOffset(size_bytes),
+                BlobChunkOffset(size_bytes),
+            );
+            let before_first = JsValue::from_str(&before_first_chunk.0.join("/"));
+            let after_last = JsValue::from_str(&after_last_chunk.0.join("/"));
+            IdbKeyRange::bound(&before_first, &after_last).unwrap()
+        };
+
+        let cached_chunk_keys: Vec<TmpFileBlobKey> = self
+            .api
+            .cache
+            .store_key_range(&self.api.db_client, DbStore::TmpFileBlob, chunks_key_range)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| TmpFileBlobKey::from_str(&s).unwrap())
+            .collect();
+
+        let mut chunks = vec![];
+        let chunk_size = self.api.chunk_size;
+        let mut byte_start = 0;
+        let mut cached_chunk_i = 0;
+        'outer: while byte_start < size_bytes {
+            // log::info!("byte_start: {byte_start}, size_bytes: {size_bytes}");
+            let mut byte_end = (byte_start + chunk_size).min(size_bytes);
+            byte_end = match cached_chunk_keys.get(cached_chunk_i) {
+                None => {
+                    // log::info!("no more cached chunks");
+                    // no more cached chunks available
+                    byte_end
+                }
+                Some(next_cached_chunk) => {
+                    use core::cmp::Ordering;
+
+                    let (_prefix, cached_byte_start, cached_byte_end) = next_cached_chunk.split();
+                    // log::info!("cached chunk info: cached_byte_start: {cached_byte_start:?}, cached_byte_end: {cached_byte_end:?}");
+                    match byte_start.cmp(&cached_byte_start.0) {
+                        Ordering::Less => {
+                            // log::info!("cannot use the next cached chunk");
+                            // cannot use the next cached chunk
+                            // but still try to consider it for the chunk to be currently downloaded
+                            byte_end.min(cached_byte_start.0)
+                        }
+                        Ordering::Equal => {
+                            // log::info!("using the next cached chunk");
+                            // can use the next cached chunk
+                            chunks.push(Ok(next_cached_chunk.clone()));
+                            cached_chunk_i += 1;
+                            byte_start = cached_byte_end.0;
+                            continue 'outer;
+                        }
+                        Ordering::Greater => {
+                            // it's assumed that the byte offset to be downloaded
+                            // cannot be higher than the start of the next cached chunk being verified
+                            unreachable!()
+                        }
+                    }
+                }
+            };
+
+            // at this point, a chunk must be downloaded (ie. it's not cached)
+            let byte_len = byte_end - byte_start;
+            let chunk_file = blob_path.chunk(
+                BlobChunkOffset(byte_start),
+                BlobChunkOffset(byte_start + byte_len),
+                BlobChunkOffset(size_bytes),
+            );
+            chunks.push(Err(chunk_file));
+        }
+
+        // let res = self.download(filename).await;
+        // log::info!("Finished checking file: {}", &filename.0);
+        // res
+        Ok(chunks)
+    }
+
     // TOO: rename function (get/download/etc)
     //
     /// Downloads a remote file (if not already present) into the cache directory
@@ -876,21 +857,11 @@ impl ApiRepo {
     /// ```
     pub async fn download(&self, filename: &FilePath) -> Result<Vec<TmpFileBlobKey>, ApiError> {
         let url = self.url(filename);
-
         let metadata: Metadata = self.api.metadata(&url).await.unwrap();
-        let cache = self.api.cache.repo(self.repo.clone());
+        let chunks = self.check(&filename, &metadata).await?;
+        let tmp_filenames = self.download_tempfiles(chunks, &url).await.unwrap();
 
-        let blob_path: FileBlobKey = cache.blob_path(&metadata.etag);
-
-        // eg. "[Cache]/[FolderName]/blobs/"
-        // std::fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
-
-        let tmp_filenames = self
-            .download_tempfiles(&blob_path, &url, metadata.size)
-            .await
-            .unwrap();
-
-        log::info!("Started/finished merging the chunks (currently unimplemented)");
+        // log::info!("Started/finished merging the chunks (currently unimplemented)");
 
         // TODO: merge temp files into bigger blobs (or even a single blob)
         //
