@@ -826,7 +826,6 @@ impl ApiRepo {
                 }
             };
 
-            // at this point, a chunk must be downloaded (ie. it's not cached)
             let byte_len = byte_end - byte_start;
             let chunk_file = blob_path.chunk(
                 BlobChunkOffset(byte_start),
@@ -834,6 +833,7 @@ impl ApiRepo {
                 BlobChunkOffset(size_bytes),
             );
             chunks.push(Err(chunk_file));
+            byte_start += byte_len;
         }
 
         // let res = self.download(filename).await;
