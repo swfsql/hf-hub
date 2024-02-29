@@ -8,6 +8,8 @@ use alloc::{
 use core::str::FromStr;
 use indexed_db_futures::IdbDatabase;
 use js_sys::Uint8Array;
+use snafu::ResultExt;
+use web_sys::DomException;
 // use indicatif::{ProgressBar, ProgressStyle};
 // use rand::Rng;
 use reqwest::{
@@ -36,40 +38,47 @@ const NAME: &str = env!("CARGO_PKG_NAME");
 #[derive(Debug, snafu::Snafu)]
 /// All errors the API can throw
 pub enum ApiError {
-    // /// Api expects certain header to be present in the results to derive some information
-    // #[snafu(display("Header {header_name} is missing"))]
-    // MissingHeader { header_name: HeaderName },
+    /// Api expects certain header to be present in the results to derive some information
+    #[snafu(display("Header {header_name} is missing"))]
+    MissingHeader { header_name: HeaderName },
 
     // /// The header exists, but the value is not conform to what the Api expects.
-    // #[snafu(display("Header {header_name} is invalid"))]
-    // InvalidHeader { header_name: HeaderName },
+    #[snafu(display("Header {header_name} is invalid"))]
+    InvalidHeader { header_name: HeaderName },
 
-    // /// The value cannot be used as a header during request header construction
-    // #[snafu(display("Invalid header value {header_value}"))]
-    // InvalidHeaderValue {
-    //     // #[from]
-    //     header_value: InvalidHeaderValue,
-    // },
+    /// The value cannot be used as a header during request header construction
+    #[snafu(display("invalid header value {header}. source: {source}"))]
+    InvalidHeaderValue {
+        source: InvalidHeaderValue,
+        header: String,
+    },
+
     /// The header value is not valid utf-8
-    #[snafu(display("header value is not a string"))]
-    ToStr {
-        // #[from]
-        source: ToStrError,
+    #[snafu(display("value is not a string. context: {context}. source: {source}"))]
+    ToStr { source: ToStrError, context: String },
+
+    /// Error in the request
+    #[snafu(display("reqwest error with context: {context}. source: {source}"))]
+    ReqwestError {
+        source: ReqwestError,
+        context: String,
     },
 
     /// Error in the request
-    #[snafu(display("request error: {reqwest_error}"))]
-    RequestError {
-        // #[from]
-        reqwest_error: ReqwestError,
-    },
+    #[snafu(display("request error for the url {url:?}. source: {source}"))]
+    RequestError { source: ReqwestError, url: FileUrl },
 
     /// Error parsing some range value
-    #[snafu(display("Cannot parse int"))]
+    #[snafu(display("cannot parse int. context: {context}. source: {source}"))]
     ParseIntError {
-        // #[from]
         source: ParseIntError,
+        context: String,
     },
+
+    #[snafu(display("dom exception. context: {context}. source: {source}"))]
+    DomError { source: DomErr, context: String },
+    //
+
     // /// I/O Error
     // #[snafu(display("I/O error {0}"))]
     // IoError {
@@ -94,6 +103,22 @@ pub enum ApiError {
     // /// Semaphore cannot be acquired
     // #[error("Invalid Response: {0:?}")]
     // InvalidResponse(Response),
+}
+
+#[derive(Debug, snafu::Snafu)]
+#[snafu(display("DomException. name: {name}; message: {message}"))]
+pub struct DomErr {
+    name: String,
+    message: String,
+}
+
+impl From<DomException> for DomErr {
+    fn from(e: DomException) -> Self {
+        Self {
+            name: e.name(),
+            message: e.message(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -154,22 +179,12 @@ impl Default for ApiBuilder {
 
 impl ApiBuilder {
     /// Default api builder
-    /// ```
-    /// use hf_hub::api::tokio::ApiBuilder;
-    /// let api = ApiBuilder::new().build().unwrap();
-    /// ```
     pub fn new() -> Self {
         let cache = Cache::default();
         Self::with(cache, Endpoint::default(), UrlTemplate::default())
     }
 
-    /// From a given cache
-    /// ```
-    /// use hf_hub::{api::tokio::ApiBuilder, Cache};
-    /// let path = std::path::PathBuf::from("/tmp");
-    /// let cache = Cache::new(path);
-    /// let api = ApiBuilder::from_cache(cache).build().unwrap();
-    /// ```
+    /// From a given cache, endpoint and url_template.
     pub fn with(cache: Cache, endpoint: Endpoint, url_template: UrlTemplate) -> Self {
         // let token = cache.token();
 
@@ -210,56 +225,36 @@ impl ApiBuilder {
     fn build_headers(&self) -> Result<HeaderMap, ApiError> {
         let mut headers = HeaderMap::new();
         let user_agent = format!("unkown/None; {NAME}/{VERSION}; rust/unknown");
-        headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent).unwrap());
-        // if let Some(token) = &self.token {
-        //     headers.insert(
-        //         AUTHORIZATION,
-        //         HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        //     );
-        // }
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_str(&user_agent).context(InvalidHeaderValueSnafu {
+                header: user_agent.clone(),
+            })?,
+        );
         Ok(headers)
     }
 
     /// Consumes the builder and builds the final [`Api`]
     pub async fn build(self) -> Result<Api, ApiError> {
         log::info!("Building Api");
-        let headers = self.build_headers().unwrap();
+        let headers = self.build_headers()?;
         let client = Client::builder()
             .default_headers(headers.clone())
             .build()
-            .unwrap();
-
-        // // Policy: only follow relative redirects
-        // // See: https://github.com/huggingface/huggingface_hub/blob/9c6af39cdce45b570f0b7f8fad2b311c96019804/src/huggingface_hub/file_download.py#L411
-        // let relative_redirect_policy = Policy::custom(|attempt| {
-        //     // Follow redirects up to a maximum of 10.
-        //     if attempt.previous().len() > 10 {
-        //         return attempt.error("too many redirects");
-        //     }
-
-        //     if let Some(last) = attempt.previous().last() {
-        //         // If the url is not relative
-        //         if last.make_relative(attempt.url()).is_none() {
-        //             return attempt.stop();
-        //         }
-        //     }
-
-        //     // Follow redirect
-        //     attempt.follow()
-        // });
-
-        // let client = Client::builder()
-        //     // .redirect(relative_redirect_policy)
-        //     .default_headers(headers)
-        //     .build()
-        //     .unwrap();
+            .context(ReqwestSnafu {
+                context: "Failed to build the client",
+            })?;
 
         let db_client = {
             use indexed_db_futures::prelude::*;
             const DB_NAME: &str = "HUGGINGFACE_DB";
             const DB_VERSION: u32 = 2;
             let path = self.cache.path.clone();
-            let mut db_req: OpenDbRequest = IdbDatabase::open_u32(DB_NAME, DB_VERSION).unwrap();
+            let mut db_req: OpenDbRequest = IdbDatabase::open_u32(DB_NAME, DB_VERSION)
+                .map_err(DomErr::from)
+                .context(DomSnafu {
+                    context: "idb: open request",
+                })?;
 
             // db_req.set_on_upgrade_needed(Some(
             db_req.set_on_upgrade_needed(Some(
@@ -292,7 +287,9 @@ impl ApiBuilder {
                 },
             ));
 
-            let db: IdbDatabase = db_req.await.unwrap();
+            let db: IdbDatabase = db_req.await.map_err(DomErr::from).context(DomSnafu {
+                context: "idb: open request conclusion",
+            })?;
             log::info!("Finished Building Api");
             db
         };
@@ -338,68 +335,6 @@ pub struct Api {
     // progress: bool,
 }
 
-// fn make_relative(src: &Path, dst: &Path) -> PathBuf {
-//     let path = src;
-//     let base = dst;
-
-//     assert_eq!(
-//         path.is_absolute(),
-//         base.is_absolute(),
-//         "This function is made to look at absolute paths only"
-//     );
-//     let mut ita = path.components();
-//     let mut itb = base.components();
-
-//     loop {
-//         match (ita.next(), itb.next()) {
-//             (Some(a), Some(b)) if a == b => (),
-//             (some_a, _) => {
-//                 // Ignoring b, because 1 component is the filename
-//                 // for which we don't need to go back up for relative
-//                 // filename to work.
-//                 let mut new_path = PathBuf::new();
-//                 for _ in itb {
-//                     new_path.push(Component::ParentDir);
-//                 }
-//                 if let Some(a) = some_a {
-//                     new_path.push(a);
-//                     for comp in ita {
-//                         new_path.push(comp);
-//                     }
-//                 }
-//                 return new_path;
-//             }
-//         }
-//     }
-// }
-
-// fn symlink_or_rename(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
-//     if dst.exists() {
-//         return Ok(());
-//     }
-
-//     let rel_src = make_relative(src, dst);
-//     #[cfg(target_os = "windows")]
-//     {
-//         if std::os::windows::fs::symlink_file(rel_src, dst).is_err() {
-//             std::fs::rename(src, dst).unwrap();
-//         }
-//     }
-
-//     #[cfg(target_family = "unix")]
-//     std::os::unix::fs::symlink(rel_src, dst).unwrap();
-
-//     Ok(())
-// }
-
-// fn jitter() -> usize {
-//     rand::thread_rng().gen_range(0..=500)
-// }
-
-// fn exponential_backoff(base_wait_time: usize, n: usize, max: usize) -> usize {
-//     (base_wait_time + n.pow(2) + jitter()).min(max)
-// }
-
 impl Api {
     /// Creates a default Api, for Api options See [`ApiBuilder`]
     pub async fn new() -> Result<Self, ApiError> {
@@ -423,7 +358,9 @@ impl Api {
             .header(RANGE, "bytes=0-0")
             .send()
             .await
-            .unwrap();
+            .context(ReqwestSnafu {
+                context: "metadata request",
+            })?;
 
         let headers = response.headers();
         let header_commit = HeaderName::from_static("x-repo-commit");
@@ -432,17 +369,27 @@ impl Api {
 
         let etag = match headers.get(&header_linked_etag) {
             Some(etag) => etag,
-            None => headers
-                .get(&header_etag)
-                // .ok_or(ApiError::MissingHeader(header_etag))
-                .unwrap(),
+            None => headers.get(&header_etag).ok_or(ApiError::MissingHeader {
+                header_name: header_etag,
+            })?,
         };
         // Cleaning extra quotes
-        let etag = etag.to_str().unwrap().to_string().replace('"', "");
+        let etag = etag
+            .to_str()
+            .context(ToStrSnafu { context: "etag" })?
+            .to_string()
+            .replace('"', "");
         let commit_hash = headers
             .get(&header_commit)
             // .ok_or(ApiError::MissingHeader(header_commit))
-            .map(|hc| hc.to_str().unwrap().to_string())
+            .map(|hc| {
+                hc.to_str()
+                    .context(ToStrSnafu {
+                        context: "header commit",
+                    })
+                    .map(|hc| hc.to_string())
+            })
+            .transpose()?
             // TODO: BUG: any unknown commit_hash would be considered an "empty string".
             // this should be fixed somehow
             //
@@ -456,18 +403,25 @@ impl Api {
         let headers = response.headers();
         let content_range = headers
             .get(CONTENT_RANGE)
-            // .ok_or(ApiError::MissingHeader(CONTENT_RANGE))
-            .unwrap()
+            .ok_or(ApiError::MissingHeader {
+                header_name: CONTENT_RANGE,
+            })?
             .to_str()
-            .unwrap();
+            .context(ToStrSnafu {
+                context: CONTENT_RANGE.to_string(),
+            })?;
 
         let size = content_range
             .split('/')
             .last()
-            // .ok_or(ApiError::InvalidHeader(CONTENT_RANGE))
-            .unwrap()
+            .ok_or(ApiError::InvalidHeader {
+                header_name: CONTENT_RANGE,
+            })?
             .parse()
-            .unwrap();
+            .context(ParseIntSnafu {
+                context: "content range",
+            })?;
+
         Ok(Metadata {
             commit_hash: RevisionHash(commit_hash),
             etag: BlobHash(etag),
@@ -481,105 +435,63 @@ impl Api {
         ApiRepo::new(self.clone(), repo)
     }
 
-    /// Simple wrapper over
-    /// ```
-    /// # use hf_hub::{api::tokio::Api, Repo, RepoType};
-    /// # let model_id = "gpt2".to_string();
-    /// let api = Api::new().unwrap();
-    /// let api = api.repo(Repo::new(model_id, RepoType::Model));
-    /// ```
+    /// TODO
     pub fn model(&self, model_id: RepoId) -> ApiRepo {
         self.clone().repo(Repo::new(model_id, RepoType::Model))
     }
 
-    /// Simple wrapper over
-    /// ```
-    /// # use hf_hub::{api::tokio::Api, Repo, RepoType};
-    /// # let model_id = "gpt2".to_string();
-    /// let api = Api::new().unwrap();
-    /// let api = api.repo(Repo::new(model_id, RepoType::Dataset));
-    /// ```
+    /// TODO
     pub fn dataset(&self, model_id: RepoId) -> ApiRepo {
         self.clone().repo(Repo::new(model_id, RepoType::Dataset))
     }
 
-    /// Simple wrapper over
-    /// ```
-    /// # use hf_hub::{api::tokio::Api, Repo, RepoType};
-    /// # let model_id = "gpt2".to_string();
-    /// let api = Api::new().unwrap();
-    /// let api = api.repo(Repo::new(model_id, RepoType::Space));
-    /// ```
+    /// TODO
     pub fn space(&self, model_id: RepoId) -> ApiRepo {
         self.clone().repo(Repo::new(model_id, RepoType::Space))
     }
 
-    pub async fn load<T: serde::de::DeserializeOwned>(&self, blob_key: &TmpFileBlobKey) -> T {
+    pub async fn load<T: serde::de::DeserializeOwned>(
+        &self,
+        blob_key: &TmpFileBlobKey,
+    ) -> Result<Option<T>, DomException> {
         self.cache
             .store_get::<T>(&self.db_client, DbStore::TmpFileBlob, &blob_key.0.join("/"))
             .await
-            .unwrap()
-            .unwrap()
     }
     pub async fn load_range<T: serde::de::DeserializeOwned>(
         &self,
         range: &web_sys::IdbKeyRange,
-    ) -> Vec<T> {
+    ) -> Result<Vec<T>, DomException> {
         self.cache
             .store_get_range::<T>(&self.db_client, DbStore::TmpFileBlob, range)
             .await
-            .unwrap()
     }
 
-    pub async fn load_bytes(&self, blob_keys: &[TmpFileBlobKey]) -> Vec<u8> {
+    pub async fn load_bytes(&self, blob_keys: &[TmpFileBlobKey]) -> Result<Vec<u8>, DomException> {
         let (_, _last_start, last_end) = blob_keys.last().unwrap().split();
         let mut res = Vec::with_capacity(last_end.0);
         for key in blob_keys {
             let bytes = self
                 .cache
                 .store_get_bytes(&self.db_client, DbStore::TmpFileBlob, &key.0.join("/"))
-                .await
-                .unwrap()
+                .await?
                 .unwrap();
             // let bytes = self.
             // let bytes = self.load::<Vec<u8>>(key).await;
             res.extend(bytes.to_vec());
         }
-        res
+        Ok(res)
     }
 
-    pub async fn delete_bytes(&self, blob_keys: &[TmpFileBlobKey]) {
+    pub async fn delete_bytes(&self, blob_keys: &[TmpFileBlobKey]) -> Result<(), DomException> {
         for key in blob_keys {
             let () = self
                 .cache
                 .store_delete(&self.db_client, DbStore::TmpFileBlob, &key.0.join("/"))
-                .await
-                .unwrap();
+                .await?;
         }
+        Ok(())
     }
-
-    // note: this use the range, but there are no performance gains
-    // pub async fn load_bytes(&self, blob_keys: &[TmpFileBlobKey]) -> Vec<u8> {
-    //     let first = blob_keys.first().unwrap();
-    //     let first = JsValue::from_str(&first.0.join("/"));
-    //     let last = blob_keys.last().unwrap();
-    //     let (_, _last_start, last_end) = last.split();
-    //     let last = JsValue::from_str(&last.0.join("/"));
-    //     // note: assumes theres no extra data between the first and start (no repeated chunks)
-    //     let range = web_sys::IdbKeyRange::bound(&first, &last).unwrap();
-
-    //     let mut res = Vec::with_capacity(last_end.0);
-    //     let bytes_vec = self.load_range::<Vec<u8>>(&range).await;
-    //     for bytes in bytes_vec {
-    //         res.extend(bytes);
-    //     }
-
-    //     // for key in blob_keys {
-    //     //     let bytes = self.load::<Vec<u8>>(key).await;
-    //     //     res.extend(bytes);
-    //     // }
-    //     res
-    // }
 }
 
 /// Shorthand for accessing things within a particular repo
@@ -596,13 +508,7 @@ impl ApiRepo {
 }
 
 impl ApiRepo {
-    /// Get the fully qualified URL of the remote filename
-    /// ```
-    /// # use hf_hub::api::tokio::Api;
-    /// let api = Api::new().unwrap();
-    /// let url = api.model("gpt2".to_string()).url("model.safetensors");
-    /// assert_eq!(url, "https://huggingface.co/gpt2/resolve/main/model.safetensors");
-    /// ```
+    /// TODO
     pub fn url(&self, filename: &FilePath) -> FileUrl {
         self.api.url_template.url(
             &self.api.endpoint,
@@ -652,7 +558,7 @@ impl ApiRepo {
         let chunk_data: bytes::Bytes =
             Self::download_chunk(&self.api.client, url, byte_start.0, byte_end.0 - 1)
                 .await
-                .unwrap();
+                .context(RequestSnafu { url: url.clone() })?;
         // TODO: allow for the returned data to be larger than the expected size, and react accordingly? (maybe not as this is assumed to never happen)
         // TODO: discard extra data in case it's present?
         assert_eq!(size_bytes, chunk_data.len());
@@ -673,7 +579,11 @@ impl ApiRepo {
                 &chunk_data_arr,
             )
             .await
-            .unwrap();
+            .map_err(DomErr::from)
+            .context(DomSnafu {
+                context: "idb: storing chunk file",
+            })?;
+
         // log::info!(
         //     "Saved chunk to storage: {} ({} bytes)",
         //     &chunk_file.0.join("/"),
@@ -689,30 +599,15 @@ impl ApiRepo {
         url: &FileUrl,
         start: usize,
         end: usize,
-    ) -> Result<bytes::Bytes, ApiError> {
+    ) -> Result<bytes::Bytes, ReqwestError> {
         let range = format!("bytes={start}-{end}");
-        let response = client
-            .get(&url.0)
-            .header(RANGE, range)
-            // .fetch_mode_no_cors()
-            .send()
-            .await
-            .unwrap()
-            .error_for_status()
-            .unwrap();
-        Ok(response.bytes().await.unwrap())
+        let response = client.get(&url.0).header(RANGE, range).send().await?;
+        Ok(response.bytes().await?)
     }
 
     // TODO: rename function (get/download/etc)
     //
-    /// This will attempt the fetch the file locally first, then [`Api.download`]
-    /// if the file is not present.
-    /// ```no_run
-    /// # use hf_hub::api::tokio::Api;
-    /// # tokio_test::block_on(async {
-    /// let api = Api::new().unwrap();
-    /// let local_filename = api.model("gpt2".to_string()).get("model.safetensors").await.unwrap();
-    /// # })
+    /// TODO
     pub async fn get(&self, filename: &FilePath) -> Result<Vec<TmpFileBlobKey>, ApiError> {
         log::info!("Checking/downloading file: {}", &filename.0);
         if let Some(_path) = self
@@ -779,7 +674,10 @@ impl ApiRepo {
             .cache
             .store_key_range(&self.api.db_client, DbStore::TmpFileBlob, chunks_key_range)
             .await
-            .unwrap()
+            .map_err(DomErr::from)
+            .context(DomSnafu {
+                context: format!("idb: getting range of chunks for {filename:?}"),
+            })?
             .into_iter()
             .map(|s| TmpFileBlobKey::from_str(&s).unwrap())
             .collect();
@@ -844,46 +742,12 @@ impl ApiRepo {
 
     // TOO: rename function (get/download/etc)
     //
-    /// Downloads a remote file (if not already present) into the cache directory
-    /// to be used locally.
-    /// This functions require internet access to verify if new versions of the file
-    /// exist, even if a file is already on disk at location.
-    /// ```no_run
-    /// # use hf_hub::api::tokio::Api;
-    /// # tokio_test::block_on(async {
-    /// let api = Api::new().unwrap();
-    /// let local_filename = api.model("gpt2".to_string()).download("model.safetensors").await.unwrap();
-    /// # })
-    /// ```
+    /// TODO
     pub async fn download(&self, filename: &FilePath) -> Result<Vec<TmpFileBlobKey>, ApiError> {
         let url = self.url(filename);
-        let metadata: Metadata = self.api.metadata(&url).await.unwrap();
+        let metadata: Metadata = self.api.metadata(&url).await?;
         let chunks = self.check(&filename, &metadata).await?;
-        let tmp_filenames = self.download_tempfiles(chunks, &url).await.unwrap();
-
-        // log::info!("Started/finished merging the chunks (currently unimplemented)");
-
-        // TODO: merge temp files into bigger blobs (or even a single blob)
-        //
-        // Note: for web storage, this may not be desired as the browser may delete data arbitrarily,
-        // and if the blobs are too big then too much data may get lost
-        // eg. losing 20x 10MB blobs may be preferable than losing a single 1GB blob.
-        //
-        // Note: check how the merging can be done. Will the memory requirements be too high?
-        // this matters because loading and storing blobs cannot be done in a streaming fashion
-
-        // TODO: merge tmp files, save into the correct destination and then delete the tmp files
-
-        // tokio::fs::rename(&tmp_filename, &blob_path).await.unwrap();
-
-        // let mut pointer_path = cache.pointer_path(&metadata.commit_hash);
-        // pointer_path.push(filename);
-        // std::fs::create_dir_all(pointer_path.parent().unwrap()).ok();
-
-        // symlink_or_rename(&blob_path, &pointer_path).unwrap();
-        // cache.create_ref(&metadata.commit_hash).unwrap();
-
-        // Ok(pointer_path)
+        let tmp_filenames = self.download_tempfiles(chunks, &url).await?;
         Ok(tmp_filenames)
     }
 
